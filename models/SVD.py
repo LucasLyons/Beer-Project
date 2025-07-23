@@ -70,8 +70,7 @@ class SVD():
         self.n_users = train.shape[0]
         self.n_items = train.shape[1]
         # get global mean rating
-        mu = train.data.mean()
-        self.mu = mu # update attribute
+        self.mu = train.data.mean()
         # initialize biases
         self.B_u = np.zeros(self.n_users)
         self.B_i = np.zeros(self.n_items)
@@ -93,9 +92,9 @@ class SVD():
             np.random.shuffle(interactions)
             # loop over all interactions and update params
             for u, i, rating in interactions:
-                self.__update(mu, u, i, rating)
+                self.__update(u, i, rating)
             # get RMSE
-            RMSE = self.__get_val_RMSE(mu, self.B_u, self.B_i, self.P, self.Q, validation)
+            RMSE = self.__get_val_RMSE(validation)
             # calculate improvement threshold
             threshold = np.abs(RMSE-RMSE_past) / RMSE_past
             t += 1
@@ -112,32 +111,25 @@ class SVD():
                 print(f'current validation RMSE: {RMSE}')
         return
     
-    def __update(self, mu, u, i, rating):
+    def __update(self, u, i, rating):
         """
         Update SVD model parameters in a pass of SGD.
         Args:
-            -mu: global mean of ratings
             -u: user index
             -i: item index
             -rating: user u's rating of item i
         """
         #predict rating
-        e = rating - (mu + self.B_u[u] + self.B_i[i] + self.P[u] @ self.Q[i])
+        e = rating - (self.mu + self.B_u[u] + self.B_i[i] + self.P[u] @ self.Q[i])
         #make parameter updates
         self.B_u[u] += self.lr * (e-self.reg*self.B_u[u])
         self.B_i[i] += self.lr * (e-self.reg*self.B_i[i])
         self.Q[i] += self.lr * (e*self.P[u]-self.reg*self.Q[i])
         self.P[u] += self.lr * (e*self.Q[i]-self.reg*self.P[u])
 
-    def __get_val_RMSE(self, mu, B_u, B_i, P, Q, validation):
+    def __get_val_RMSE(self, validation):
         """
         Generate predictions on validation data and return RMSE.
-        Args:
-            -mu: global mean of ratings
-            -B_u: user biases
-            -B_i: item biases
-            -P: user factors
-            -Q: item factors
         """
         # get values
         user_idx = validation['user_idx'].values
@@ -145,22 +137,64 @@ class SVD():
         ratings = validation['review_overall'].values
         # get factor scores
         factor_scores = np.sum(np.multiply(
-            P[user_idx], # user factors
-            Q[item_idx] # item factors
+            self.P[user_idx], # user factors
+            self.Q[item_idx] # item factors
         ), axis = 1)
 
         # generate predictions
-        preds = mu + B_u[user_idx] + B_i[item_idx] + factor_scores
+        preds = self.mu + self.B_u[user_idx] + self.B_i[item_idx] + factor_scores
         # calculate error
         errors = ratings - preds
         # calculate RMSE
         RMSE = np.sqrt(np.mean(errors**2))
         return RMSE
     
-    def coverage(self):
-        # get user and item bias vectors
-        B_u_row = self.B_u.reshape(self.n_users,1)
-        B_i_col = self.B_i.reshape(1,self.n_items)
+    def top_N_coverage(self, N=10):
+        """
+        Computes the coverage on the item catalog from the training set, 
+        with top-N unseen items being recommended.
+        Args:
+            -N: the number of unseen items recommended
+        """
         # generate matrix of user-item predictions
-        preds = self.mu + B_u_row + B_i_col + self.P @ self.Q.T
+        preds = self.P @ self.Q.T
+        # find "seen" items (previously rated)
+        user_ids, item_ids = self.train.nonzero()
+        # mask seen items
+        masked_preds = preds.copy()
+        masked_preds[user_ids, item_ids] =  - np.inf
+        top_N = np.argpartition(-masked_preds, N, axis=1)[:, :N]
+
+        # flatten and get unique items across all users
+        unique_recommended_items = np.unique(top_N)
+        coverage = round((len(unique_recommended_items) / preds.shape[1]),4)  # divide by total number of items
+        return coverage
+    
+    def hit_rate_at_N(self, validation, N=10):
+        """
+        Computes the hit-rate, i.e. if the user's next-rated item is among the top N items recommended.
+        Args:
+            -validation: validation set
+            -N: top N items are recommended
+        """
+        """
+        Computes the coverage on the item catalog from the training set, 
+        with top-N unseen items being recommended.
+        Args:
+            -N: the number of unseen items recommended
+        """
+        # generate matrix of user-item predictions
+        preds = self.P @ self.Q.T
+        # find "seen" items (previously rated)
+        user_ids, item_ids = self.train.nonzero()
+        # mask seen items
+        masked_preds = preds.copy()
+        masked_preds[user_ids, item_ids] =  - np.inf
+        # get top N items
+        top_N = np.argpartition(-masked_preds, N, axis=1)[:, :N]
+        # calculate hits
+        hits = np.isin(validation['item_idx'].values, top_N[validation['user_idx'].values])
+        hit_rate = np.mean(hits)
+        return hit_rate
+
         
