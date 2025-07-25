@@ -23,6 +23,7 @@ class SVD():
         self.n_users = None
         self.n_items = None
         self.RMSE = 0
+        self.RMSE_clipped = 0
         self.train = None # sparse matrix (memory efficient)
         self.random_seed = 420
 
@@ -84,10 +85,10 @@ class SVD():
             train.data #get ratings
         ))
         # initialize RMSE counter
-        RMSE_past = 0.001
+        RMSE_past = None
         
         #loop until relative RMSE improvement threshold is < epsilon or patience runs out
-        for t in range(self.patience):
+        for t in range(1, self.patience+1):
             # randomize order for SGD
             np.random.shuffle(interactions)
             # loop over all interactions and update params
@@ -96,14 +97,19 @@ class SVD():
             # get RMSE
             RMSE = self.__get_val_RMSE(validation)
             # calculate improvement threshold
-            threshold = np.abs(RMSE-RMSE_past) / RMSE_past
-            t += 1
-            # break if RMSE stops improving
-            if threshold < self.epsilon:
-                self.RMSE = RMSE
-                print(f'Stopped after {t} iterations')
-                print(f'Final RMSE is: {RMSE} with {self.k} latent factors, {self.lr} learning rate, {self.reg} reg. parameter')
-                break
+            if t > 1:
+                threshold = np.abs(RMSE-RMSE_past) / RMSE_past
+                # break if RMSE stops improving
+                if threshold < self.epsilon:
+                    # get RMSE
+                    self.RMSE = RMSE
+                    # and clipped RMSE
+                    self.RMSE_clipped = self.get_clipped_pred_RMSE(validation)
+                    print(f'Stopped after {t} iterations')
+                    print(f'Final RMSE is: {self.RMSE} (clipped prediction RMSE is {self.RMSE_clipped}) \n' 
+                          f'Params: {self.k} latent factors, '
+                          f'{self.lr} learning rate, {self.reg} reg. parameter')
+                    break
             # update RMSE
             RMSE_past = RMSE
             if verbose == True:
@@ -129,7 +135,9 @@ class SVD():
 
     def __get_val_RMSE(self, validation):
         """
-        Generate predictions on validation data and return RMSE.
+        Generate continuous predictions on validation data and return RMSE.
+        Args:
+            -validation: validation set consisting of user-item interactions
         """
         # get values
         user_idx = validation['user_idx'].values
@@ -149,6 +157,44 @@ class SVD():
         RMSE = np.sqrt(np.mean(errors**2))
         return RMSE
     
+    def get_clipped_pred_RMSE(self, validation):
+        """
+        Generate continuous predictions on validation data and return RMSE.
+        Args:
+            -validation: validation set consisting of user-item interactions
+        """
+        # get values
+        user_idx = validation['user_idx'].values
+        item_idx = validation['item_idx'].values
+        ratings = validation['review_overall'].values
+        # get factor scores
+        factor_scores = np.sum(np.multiply(
+            self.P[user_idx], # user factors
+            self.Q[item_idx] # item factors
+        ), axis = 1)
+
+        # generate predictions
+        preds = self.mu + self.B_u[user_idx] + self.B_i[item_idx] + factor_scores
+        preds = np.round(preds * 2) / 2 # round to nearest 0.5
+        preds = np.clip(preds, 0, 5) # clip to [0,5]
+        # calculate error
+        errors = ratings - preds
+        # calculate RMSE
+        clipped_RMSE = np.sqrt(np.mean(errors**2))
+        return clipped_RMSE
+    
+    def predict(self, user, item):
+        """"
+        Predict the rating of user u for item i. Prediction rounded to nearest 0.5 and clipped to [0,5].
+        Args:
+            -user: user whose rating will be predicted
+            -item: predict the user's rating of this item
+        """
+        prediction = self.mu + self.B_u[user] + self.B_i[item] + self.P[user,:] @ self.Q[item,:]
+        clipped_prediction = np.round(prediction * 2) / 2 # round to nearest 0.5
+        clipped_prediction = np.clip(clipped_prediction, 0, 5) # clip to [0,5]
+        return clipped_prediction
+    
     def top_N_coverage(self, N=10):
         """
         Computes the coverage on the item catalog from the training set, 
@@ -159,7 +205,7 @@ class SVD():
         # generate matrix of user-item predictions
         preds = self.P @ self.Q.T
         # find "seen" items (previously rated)
-        user_ids, item_ids = self.train.nonzero()
+        user_ids, item_ids = self.train.row, self.train.col
         # mask seen items
         masked_preds = preds.copy()
         masked_preds[user_ids, item_ids] =  - np.inf
@@ -170,7 +216,24 @@ class SVD():
         coverage = round((len(unique_recommended_items) / preds.shape[1]),4)  # divide by total number of items
         return coverage
     
-    def hit_rate_at_N(self, validation, N=10):
+    def get_top_N(self, N=10):
+        """
+        Computes, the top-N unseen items, as ranked by user-item factor interactions.
+        Args:
+            -N: the number of unseen items recommended
+        """
+        # generate matrix of user-item predictions
+        preds = self.P @ self.Q.T
+        # find "seen" items (previously rated)
+        user_ids, item_ids = self.train.row, self.train.col
+        # mask seen items
+        masked_preds = preds.copy()
+        masked_preds[user_ids, item_ids] =  - np.inf
+        top_N = np.argsort(-masked_preds, N, axis=1)[:, :N]
+
+        return top_N
+    
+    def hit_rate_at_N(self, validation, N=100):
         """
         Computes the hit-rate, i.e. if the user's next-rated item is among the top N items recommended.
         Args:
@@ -186,14 +249,15 @@ class SVD():
         # generate matrix of user-item predictions
         preds = self.P @ self.Q.T
         # find "seen" items (previously rated)
-        user_ids, item_ids = self.train.nonzero()
+        user_ids, item_ids = self.train.row, self.train.col
         # mask seen items
         masked_preds = preds.copy()
         masked_preds[user_ids, item_ids] =  - np.inf
         # get top N items
         top_N = np.argpartition(-masked_preds, N, axis=1)[:, :N]
         # calculate hits
-        hits = np.isin(validation['item_idx'].values, top_N[validation['user_idx'].values])
+        hits = (top_N[validation['user_idx'].values] == validation['item_idx'].values[:,np.newaxis] # check matches
+                ).any(axis=1) # see if any of the TOp-N recommended were the validation set item
         hit_rate = np.mean(hits)
         return hit_rate
 
