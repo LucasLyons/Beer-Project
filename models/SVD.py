@@ -105,10 +105,10 @@ class SVD():
                     self.RMSE = RMSE
                     # and clipped RMSE
                     self.RMSE_clipped = self.get_clipped_pred_RMSE(validation)
-                    print(f'Stopped after {t} iterations')
                     print(f'Final RMSE is: {self.RMSE} (clipped prediction RMSE is {self.RMSE_clipped}) \n' 
                           f'Params: {self.k} latent factors, '
                           f'{self.lr} learning rate, {self.reg} reg. parameter')
+                    print(f'Stopped after {t} iterations')
                     break
             # update RMSE
             RMSE_past = RMSE
