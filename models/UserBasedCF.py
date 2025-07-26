@@ -12,9 +12,11 @@ class UserBasedCF():
         # initialize attributes
         self.train = train
         self.validation = validation
-        self.sim = None
         self.user_encoder = user_encoder
         self.item_encoder = item_encoder
+        # model parameters will be learned
+        self.sim = None
+        self.user_mean_scores = None
         
     def fit(self):
         # get sum of scores per user
@@ -53,7 +55,7 @@ class UserBasedCF():
         k = min(k, nbs.size)
 
         # get similarity scores
-        sims = self.similarity[user, :].toarray().flatten()
+        sims = self.sim[user, :].toarray().flatten()
         # get similarity scores for neighbours
         sims = sims[nbs]
         # take k-nearest similarities
@@ -75,7 +77,7 @@ class UserBasedCF():
         # return prediction
         return weighted_avg
     
-    def evaluate_error(self, k):
+    def evaluate_error(self, k=10):
         preds = []
         actuals = []
 
@@ -127,7 +129,7 @@ class UserBasedCF():
         top_N_items = np.argsort(preds)[-N:][::-1]
         return top_N_items.tolist()
     
-    def get_top_N_beers(self, user, k = 3, N = 5):
+    def top_N_beers(self, user, k=3, N=5):
         """
         Predict top N beers with k-nn CF
         Args:
@@ -135,7 +137,18 @@ class UserBasedCF():
             -k: number of nearest neighbours to use in computation
             -N: return top-ranked beers up to rank N
         """
-        preds = self.predict_top_N_fast(user, k, N)
+        preds = self.predict_top_N(user, k, N)
         # get item dict. mappings
         beer_ids = self.item_encoder.inverse_transform(preds)
         return beer_ids
+    
+    def coverage_at_N(self, k=3,N=5):
+        recommended_beers = set()
+        for user in range(self.train.shape[0]):
+            preds = self.predict_top_N(user, k, N)
+            # update the set of recommended beers
+            recommended_beers.update(preds)
+        # evaluate and return
+        beers_recommended = len(recommended_beers)
+        coverage = round(( beers_recommended / self.train.shape[1]) * 100,2)
+        return (coverage, beers_recommended)

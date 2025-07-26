@@ -3,6 +3,7 @@ import scipy.stats as stats
 import pandas as pd
 import numpy as np
 from scipy.sparse import coo_matrix, csr_matrix
+from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 class SVD():
 
@@ -24,6 +25,7 @@ class SVD():
         self.n_items = None
         self.RMSE = 0
         self.RMSE_clipped = 0
+        self.MAE = 0
         self.train = None # sparse matrix (memory efficient)
         self.random_seed = 420
 
@@ -103,9 +105,12 @@ class SVD():
                 if threshold < self.epsilon:
                     # get RMSE
                     self.RMSE = RMSE
-                    # and clipped RMSE
-                    self.RMSE_clipped = self.get_clipped_pred_RMSE(validation)
-                    print(f'Final RMSE is: {self.RMSE} (clipped prediction RMSE is {self.RMSE_clipped}) \n' 
+                    # evaluate prediction errors
+                    eval = self.__evaluate_errors(validation)
+                    # save predictions errors
+                    self.MAE = eval[1] #MAE
+                    self.RMSE_clipped = eval[0] # and clipped RMSE
+                    print(f'Final training RMSE is: {self.RMSE}\n'
                           f'Params: {self.k} latent factors, '
                           f'{self.lr} learning rate, {self.reg} reg. parameter')
                     print(f'Stopped after {t} iterations')
@@ -152,12 +157,10 @@ class SVD():
         # generate predictions
         preds = self.mu + self.B_u[user_idx] + self.B_i[item_idx] + factor_scores
         # calculate error
-        errors = ratings - preds
-        # calculate RMSE
-        RMSE = np.sqrt(np.mean(errors**2))
+        RMSE = np.sqrt(mean_squared_error(ratings, preds))
         return RMSE
     
-    def get_clipped_pred_RMSE(self, validation):
+    def __evaluate_errors(self, validation):
         """
         Generate continuous predictions on validation data and return RMSE.
         Args:
@@ -177,11 +180,10 @@ class SVD():
         preds = self.mu + self.B_u[user_idx] + self.B_i[item_idx] + factor_scores
         preds = np.round(preds * 2) / 2 # round to nearest 0.5
         preds = np.clip(preds, 0, 5) # clip to [0,5]
-        # calculate error
-        errors = ratings - preds
-        # calculate RMSE
-        clipped_RMSE = np.sqrt(np.mean(errors**2))
-        return clipped_RMSE
+        # calculate metrics
+        RMSE = np.sqrt(mean_squared_error(ratings, preds))
+        MAE = mean_absolute_error(ratings,preds)
+        return RMSE, MAE
     
     def predict(self, user, item):
         """"
