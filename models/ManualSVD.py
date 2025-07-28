@@ -5,7 +5,7 @@ import numpy as np
 from scipy.sparse import coo_matrix, csr_matrix
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
-class SVD():
+class ManualSVD():
 
     def __init__(self, k=50, lr=0.005, reg=0.02, patience=50, epsilon=10**(-3)):
         # initialize hyperparameters

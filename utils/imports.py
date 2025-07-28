@@ -11,6 +11,7 @@ import recbole as rb
 import sklearn as sk
 import itertools
 import pickle
+import surprise
 from scipy.sparse import coo_matrix, csr_matrix, save_npz, load_npz
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import mean_squared_error, mean_absolute_error
