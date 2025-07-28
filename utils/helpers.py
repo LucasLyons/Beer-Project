@@ -61,3 +61,5 @@ def top_n_coverage(model, trainset, N=10):
     item_coverage = len(np.unique(top_n_iids)) / trainset.n_items
     return item_coverage 
 
+def round_half(x):
+    return round(x * 2) / 2
