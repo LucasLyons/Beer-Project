@@ -8,10 +8,9 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 from sklearn.metrics.pairwise import cosine_similarity
 
 class UserBasedCF():
-    def __init__(self, train, validation, user_encoder, item_encoder):
+    def __init__(self, train, user_encoder, item_encoder):
         # initialize attributes
         self.train = train
-        self.validation = validation
         self.user_encoder = user_encoder
         self.item_encoder = item_encoder
         # model parameters will be learned
@@ -77,11 +76,11 @@ class UserBasedCF():
         # return prediction
         return weighted_avg
     
-    def evaluate_error(self, k=10):
+    def evaluate_error(self, validation, k=10):
         preds = []
         actuals = []
 
-        for row in self.validation.itertuples(index=False):
+        for row in validation.itertuples(index=False):
             u = row.user_idx
             i = row.item_idx
             true_r = row.review_overall

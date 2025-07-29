@@ -1,6 +1,7 @@
 import seaborn as sb
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 import heapq
 from collections import defaultdict
 from surprise import Dataset, SVD, Reader
@@ -13,9 +14,40 @@ def get_beer_data(beer_data, beer_ids):
         ).sort_values(by=('review_overall', 'count'), ascending=False).set_index("beer_beerid")
     return results
 
-def plot_heatmap(grid_search, values):
-    pivot = grid_search.copy().pivot(index="k", columns="reg", values=values)
-    sb.heatmap(pivot, annot=True, fmt=".4f", cmap='rocket').invert_yaxis()
+def plot_heatmap(grid_search, values, ax=None):
+    if ax is not None:
+        ax.clear()
+        pivot = grid_search.copy().pivot(
+            index="k", columns="reg", values=values)
+        sb.heatmap(
+            pivot, annot=True, fmt=".4f", cmap='rocket', ax=ax, cbar=False
+            ).invert_yaxis()
+    else:
+        pivot = grid_search.copy().pivot(index="k", columns="reg", values=values)
+        sb.heatmap(pivot, annot=True, fmt=".4f", cmap='rocket').invert_yaxis()
+
+def plot_comparison_heatmap(data_1, data_2, values):
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+
+    # plot heatmaps
+    hm1 = plot_heatmap(data_1, values, ax=axes[0])
+    hm2 = plot_heatmap(data_2, values, ax=axes[1])
+
+    # Create a common color scale (vmin, vmax) for both
+    vmin = min(data_1[values].min(), data_2[values].min())
+    vmax = max(data_1[values].max(), data_2[values].max())
+
+    # Create a single colorbar
+    # Use the image from one of the heatmaps to generate the colorbar
+    cbar_ax = fig.add_axes([0.92, 0.3, 0.02, 0.4])  # [left, bottom, width, height]
+    norm = plt.Normalize(vmin=vmin, vmax=vmax)
+    sm = plt.cm.ScalarMappable(cmap="rocket", norm=norm)
+    sm.set_array([])
+    n_ticks = 4
+    tick_values = np.linspace(vmin, vmax, n_ticks)
+    fig.colorbar(sm, cax=cbar_ax, ticks=tick_values)
+    return fig, axes
+
 
 def get_top_n(predictions, n=10):
     """Return the top-N recommendation for each user from a set of predictions.
