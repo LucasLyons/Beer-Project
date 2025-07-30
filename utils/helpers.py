@@ -6,12 +6,15 @@ import heapq
 from collections import defaultdict
 from surprise import Dataset, SVD, Reader
 
-def get_beer_data(beer_data, beer_ids):
-    results = beer_data[beer_data['beer_beerid'].isin(beer_ids)].groupby([
-        'beer_beerid', 'beer_name', 'brewery_name', 'beer_style'], group_keys=False, as_index=False).agg(
-            {'review_overall': ['mean', 'count', 'std'],
-            'beer_abv': ['mean']}
-        ).sort_values(by=('review_overall', 'count'), ascending=False).set_index("beer_beerid")
+def get_beer_data(beer_data, beer_ids, item_encoder):
+    results = beer_data[
+        beer_data['beer_beerid'].isin(item_encoder.inverse_transform(beer_ids))
+        ].groupby([
+        'beer_beerid', 'beer_name', 'brewery_name', 'beer_style'
+        ], group_keys=False, as_index=False
+        ).agg(
+            {'review_overall': ['mean', 'count', 'std'],'beer_abv': ['mean']}
+            ).sort_values(by=('review_overall', 'count'), ascending=False).set_index("beer_beerid")
     return results
 
 def plot_heatmap(grid_search, values, ax=None):
@@ -95,3 +98,9 @@ def top_n_coverage(model, trainset, N=10):
 
 def round_half(x):
     return round(x * 2) / 2
+
+def safe_len(obj):
+    try:
+        return len(obj)
+    except TypeError:
+        return 1

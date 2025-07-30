@@ -2,12 +2,13 @@ import scipy as sp
 import scipy.stats as stats
 import pandas as pd
 import numpy as np
+from utils.helpers import safe_len
 from scipy.sparse import coo_matrix, csr_matrix
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 class ManualSVD():
 
-    def __init__(self, k=50, lr=0.005, reg=0.02, patience=50, epsilon=10**(-3)):
+    def __init__(self, k=50, lr=0.005, reg=0.02, patience=20, epsilon=10**(-3)):
         # initialize hyperparameters
         self.k = k
         self.lr = lr
@@ -23,11 +24,12 @@ class ManualSVD():
         # training set
         self.n_users = None
         self.n_items = None
-        self.RMSE = 0
-        self.RMSE_clipped = 0
-        self.MAE = 0
         self.train = None # sparse matrix (memory efficient)
         self.random_seed = 420
+        # if using validation set
+        self.val_RMSE = 0
+        self.val_RMSE_clipped = 0
+        self.val_MAE = 0
 
     def set_params(self, B_u = None, B_i = None, P = None, Q = None, mu = None):
         """
@@ -50,7 +52,7 @@ class ManualSVD():
         if mu is not None:
             self.mu = mu
     
-    def fit(self, train, validation, verbose=True):
+    def fit(self, train, validation=None, verbose=True):
         """
         Computes the SVD model parameters using stochastic gradient descent.
         Ends after patience # of epochs have passed or the relative RMSE improvement threshold is < epsilon
@@ -64,6 +66,21 @@ class ManualSVD():
             patience: maximum number of epochs to run SGD
             epsilon: Relative RMSE improvement threshold cutoff
         """
+        interactions = self.__fit_initialize(train)
+        
+        if validation is not None:
+            self.__validation_compute(validation, interactions, verbose)
+        else: 
+            for t in range(1, self.patience+1):
+                for u, i, rating in interactions:
+                    self.__update(u, i, rating)
+            print(f'Params: {self.k} latent factors, '
+                  f'{self.lr} learning rate, {self.reg} reg. parameter')
+            print(f'Stopped after {t} iterations')
+        
+        return
+    
+    def __fit_initialize(self, train):
         # use random seed
         np.random.seed(self.random_seed)
         # make sure train is in COO format
@@ -86,9 +103,11 @@ class ManualSVD():
             train.col, #get cols
             train.data #get ratings
         ))
+        return interactions
+    
+    def __validation_compute(self, validation, interactions, verbose=False):
         # initialize RMSE counter
         RMSE_past = None
-        
         #loop until relative RMSE improvement threshold is < epsilon or patience runs out
         for t in range(1, self.patience+1):
             # randomize order for SGD
@@ -96,31 +115,31 @@ class ManualSVD():
             # loop over all interactions and update params
             for u, i, rating in interactions:
                 self.__update(u, i, rating)
-            # get RMSE
-            RMSE = self.__get_val_RMSE(validation)
-            # calculate improvement threshold
+            # get RMSE on validation set
+            preds = self.predict_validation(validation, clipped=False)
+            eval = self.accuracy(preds) # returns RMSE, MAE
+            RMSE = eval[0]
+            # calculate optional stopping after first iteration
             if t > 1:
+                # calculate improvement threshold
                 threshold = np.abs(RMSE-RMSE_past) / RMSE_past
-                # break if RMSE stops improving
-                if threshold < self.epsilon:
+                # break if RMSE stops improving or patience runs out
+                if (threshold < self.epsilon) or (t == self.patience):
                     # get RMSE
-                    self.RMSE = RMSE
-                    # evaluate prediction errors
-                    eval = self.__evaluate_errors(validation)
+                    self.val_RMSE = RMSE
                     # save predictions errors
-                    self.MAE = eval[1] #MAE
-                    self.RMSE_clipped = eval[0] # and clipped RMSE
-                    print(f'Final training RMSE is: {self.RMSE}\n'
+                    self.val_MAE = eval[1] #MAE
+                    self.val_RMSE_clipped = eval[0] # and clipped RMSE
+                    print(f'Final validation RMSE is: {self.val_RMSE}\n'
                           f'Params: {self.k} latent factors, '
                           f'{self.lr} learning rate, {self.reg} reg. parameter')
                     print(f'Stopped after {t} iterations')
                     break
             # update RMSE
             RMSE_past = RMSE
-            if verbose == True:
+            if verbose:
                 print(f'Iteration: {t}')
                 print(f'current validation RMSE: {RMSE}')
-        return
     
     def __update(self, u, i, rating):
         """
@@ -131,16 +150,16 @@ class ManualSVD():
             -rating: user u's rating of item i
         """
         #predict rating
-        e = rating - (self.mu + self.B_u[u] + self.B_i[i] + self.P[u] @ self.Q[i])
+        e = (rating - (self.mu + self.B_u[u] + self.B_i[i] + np.dot(self.P[u], self.Q[i])))
         #make parameter updates
         self.B_u[u] += self.lr * (e-self.reg*self.B_u[u])
         self.B_i[i] += self.lr * (e-self.reg*self.B_i[i])
         self.Q[i] += self.lr * (e*self.P[u]-self.reg*self.Q[i])
         self.P[u] += self.lr * (e*self.Q[i]-self.reg*self.P[u])
 
-    def __get_val_RMSE(self, validation):
+    def predict_validation(self, validation, clipped=True):
         """
-        Generate continuous predictions on validation data and return RMSE.
+        Generate predictions on validation data and return.
         Args:
             -validation: validation set consisting of user-item interactions
         """
@@ -156,46 +175,46 @@ class ManualSVD():
 
         # generate predictions
         preds = self.mu + self.B_u[user_idx] + self.B_i[item_idx] + factor_scores
-        # calculate error
-        RMSE = np.sqrt(mean_squared_error(ratings, preds))
-        return RMSE
+        if clipped:
+            preds = np.round(preds * 2) / 2 # round to nearest 0.5
+            preds = np.clip(preds, 0, 5) # clip to [0,5]
+        return (ratings, preds)
     
-    def __evaluate_errors(self, validation):
+    def predict(self, users, items, clipped=False):
         """
-        Generate continuous predictions on validation data and return RMSE.
+        Predict the rating of users for items.
         Args:
-            -validation: validation set consisting of user-item interactions
+            -users: users whose ratings will be predicted
+            -items: predict the users' rating of these items
+            -clipped: if True, round to nearest 0.5 and clip to [0,5]
+        Returns:
+            prediction: |users| x |items| matrix of predicted ratings
         """
-        # get values
-        user_idx = validation['user_idx'].values
-        item_idx = validation['item_idx'].values
-        ratings = validation['review_overall'].values
-        # get factor scores
-        factor_scores = np.sum(np.multiply(
-            self.P[user_idx], # user factors
-            self.Q[item_idx] # item factors
-        ), axis = 1)
-
-        # generate predictions
-        preds = self.mu + self.B_u[user_idx] + self.B_i[item_idx] + factor_scores
-        preds = np.round(preds * 2) / 2 # round to nearest 0.5
-        preds = np.clip(preds, 0, 5) # clip to [0,5]
-        # calculate metrics
-        RMSE = np.sqrt(mean_squared_error(ratings, preds))
-        MAE = mean_absolute_error(ratings,preds)
-        return RMSE, MAE
-    
-    def predict(self, user, item):
-        """"
-        Predict the rating of user u for item i. Prediction rounded to nearest 0.5 and clipped to [0,5].
-        Args:
-            -user: user whose rating will be predicted
-            -item: predict the user's rating of this item
-        """
-        prediction = self.mu + self.B_u[user] + self.B_i[item] + self.P[user,:] @ self.Q[item,:]
+        u, i = safe_len(users), safe_len(items) # |users|, |items|
+        prediction = self.mu + self.B_u[users].reshape(u,1) + self.B_i[items].reshape(1,i) \
+            + (self.P[users,:] @ self.Q[items,:].T) # dim |users| x |items|
+        if clipped == False:
+            return prediction
         clipped_prediction = np.round(prediction * 2) / 2 # round to nearest 0.5
         clipped_prediction = np.clip(clipped_prediction, 0, 5) # clip to [0,5]
         return clipped_prediction
+    
+    def accuracy(self, predict_validation, verbose=False):
+        """
+        Computes the RMSE and MAE of the model on the validation set.
+        Args:
+            -predict_validation: validation set with predictions
+        Returns:
+            RMSE, MAE: root mean squared error and mean absolute error
+        """
+        # get values
+        ratings, preds = predict_validation
+        # calculate errors
+        RMSE = np.sqrt(mean_squared_error(ratings, preds))
+        MAE = mean_absolute_error(ratings, preds)
+        if verbose:
+            print(f'RMSE: {RMSE}, MAE: {MAE}')
+        return RMSE, MAE
     
     def top_N_coverage(self, N=10):
         """
@@ -231,7 +250,7 @@ class ManualSVD():
         # mask seen items
         masked_preds = preds.copy()
         masked_preds[user_ids, item_ids] =  - np.inf
-        top_N = np.argsort(-masked_preds, N, axis=1)[:, :N]
+        top_N = np.argsort(-masked_preds, axis=1)[:, :N]
 
         return top_N
     
