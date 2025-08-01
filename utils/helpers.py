@@ -6,15 +6,21 @@ import heapq
 from collections import defaultdict
 from surprise import Dataset, SVD, Reader
 
-def get_beer_data(beer_data, beer_ids, item_encoder):
+def get_beer_data(beer_data, beer_ids, item_encoder=None, sort = False):
+    if item_encoder:
+        beer_ids = item_encoder.inverse_transform(beer_ids)
     results = beer_data[
-        beer_data['beer_beerid'].isin(item_encoder.inverse_transform(beer_ids))
+        beer_data['beer_beerid'].isin(beer_ids)
         ].groupby([
         'beer_beerid', 'beer_name', 'brewery_name', 'beer_style'
         ], group_keys=False, as_index=False
         ).agg(
             {'review_overall': ['mean', 'count', 'std'],'beer_abv': ['mean']}
-            ).sort_values(by=('review_overall', 'count'), ascending=False).set_index("beer_beerid")
+            )
+    if sort:
+        result = results.sort_values(
+            by=('review_overall', 'count'), ascending=False
+            ).set_index("beer_beerid")
     return results
 
 def plot_heatmap(grid_search, values, ax=None):
@@ -104,3 +110,46 @@ def safe_len(obj):
         return len(obj)
     except TypeError:
         return 1
+    
+def surprise_get_top_N(algo, N=10):
+    import numpy as np
+    from collections import defaultdict
+
+    # Extract latent factors
+    U = algo.pu               # user latent factors (n_users, n_factors)
+    V = algo.qi               # item latent factors (n_items, n_factors)
+    bu = algo.bu              # user biases (n_users,)
+    bi = algo.bi              # item biases (n_items,)
+    global_mean = algo.trainset.global_mean
+
+    # Map inner IDs to raw IDs
+    uid_map = {uid: algo.trainset.to_raw_uid(uid) for uid in algo.trainset.all_users()}
+    iid_map = {iid: algo.trainset.to_raw_iid(iid) for iid in algo.trainset.all_items()}
+
+    # Set of all item inner IDs
+    all_item_inner_ids = set(algo.trainset.all_items())
+
+    top_n = defaultdict(list)
+
+    for uid_inner in algo.trainset.all_users():
+        seen_iids_inner = set(j for (j, _) in algo.trainset.ur[uid_inner])
+        unseen_iids_inner = np.array(list(all_item_inner_ids - seen_iids_inner))
+
+        if len(unseen_iids_inner) == 0:
+            continue
+
+        # Vectorized prediction: u ⋅ vᵀ + bu + bi + μ
+        user_vec = U[uid_inner]                    # shape: (n_factors,)
+        unseen_item_vecs = V[unseen_iids_inner]    # shape: (n_unseen, n_factors)
+        scores = unseen_item_vecs @ user_vec       # dot product
+        scores += bu[uid_inner] + bi[unseen_iids_inner] + global_mean
+
+        # Top-n indices
+        topn_indices = np.argpartition(scores, -N)[-N:]
+        topn_sorted_indices = topn_indices[np.argsort(scores[topn_indices])[::-1]]
+        topn_iids_inner = unseen_iids_inner[topn_sorted_indices]
+
+        # Convert back to raw IDs and store
+        uid_raw = uid_map[uid_inner]
+        top_n[uid_raw] = [(iid_map[iid], scores[topn_sorted_indices[i]]) for i, iid in enumerate(topn_iids_inner)]
+        return top_n

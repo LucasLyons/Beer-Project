@@ -8,11 +8,14 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 class ManualSVD():
 
-    def __init__(self, k=50, lr=0.005, reg=0.02, patience=20, epsilon=10**(-3)):
+    def __init__(self, k=50, bias_lr=0.005, latent_lr = 0.005, reg_bias=0.2,
+                  reg_latent=0.02, patience=20, epsilon=10**(-3)):
         # initialize hyperparameters
         self.k = k
-        self.lr = lr
-        self.reg = reg
+        self.bias_lr = bias_lr
+        self.latent_lr = latent_lr
+        self.reg_bias = reg_bias
+        self.reg_latent = reg_latent
         self.patience = patience
         self.epsilon = epsilon
         # model parameters will be set during fit
@@ -26,6 +29,8 @@ class ManualSVD():
         self.n_items = None
         self.train = None # sparse matrix (memory efficient)
         self.random_seed = 420
+        self.item_freq = None
+        self.user_freq = None
         # if using validation set
         self.val_RMSE = 0
         self.val_RMSE_clipped = 0
@@ -74,8 +79,7 @@ class ManualSVD():
             for t in range(1, self.patience+1):
                 for u, i, rating in interactions:
                     self.__update(u, i, rating)
-            print(f'Params: {self.k} latent factors, '
-                  f'{self.lr} learning rate, {self.reg} reg. parameter')
+            print(f'Params: {self.k} latent factors')
             print(f'Stopped after {t} iterations')
         
         return
@@ -103,6 +107,9 @@ class ManualSVD():
             train.col, #get cols
             train.data #get ratings
         ))
+        from collections import Counter
+        self.item_freq = np.bincount(self.train.col)  # Fast for COO
+        self.user_freq = np.bincount(self.train.row)
         return interactions
     
     def __validation_compute(self, validation, interactions, verbose=False):
@@ -130,9 +137,7 @@ class ManualSVD():
                     # save predictions errors
                     self.val_MAE = eval[1] #MAE
                     self.val_RMSE_clipped = eval[0] # and clipped RMSE
-                    print(f'Final validation RMSE is: {self.val_RMSE}\n'
-                          f'Params: {self.k} latent factors, '
-                          f'{self.lr} learning rate, {self.reg} reg. parameter')
+                    print(f'Final validation RMSE is: {self.val_RMSE}\n')
                     print(f'Stopped after {t} iterations')
                     break
             # update RMSE
@@ -149,13 +154,15 @@ class ManualSVD():
             -i: item index
             -rating: user u's rating of item i
         """
+        n_i = self.item_freq[i]
+        n_u = self.user_freq[u]
         #predict rating
         e = (rating - (self.mu + self.B_u[u] + self.B_i[i] + np.dot(self.P[u], self.Q[i])))
         #make parameter updates
-        self.B_u[u] += self.lr * (e-self.reg*self.B_u[u])
-        self.B_i[i] += self.lr * (e-self.reg*self.B_i[i])
-        self.Q[i] += self.lr * (e*self.P[u]-self.reg*self.Q[i])
-        self.P[u] += self.lr * (e*self.Q[i]-self.reg*self.P[u])
+        self.B_u[u] += self.bias_lr * (e-(self.reg_bias/np.sqrt(n_u))*self.B_u[u])
+        self.B_i[i] += self.bias_lr * (e-(self.reg_bias/np.sqrt(n_i))*self.B_i[i]) # regularize bias terms
+        self.Q[i] += self.latent_lr * (e*self.P[u]-self.reg_latent*self.Q[i])
+        self.P[u] += self.latent_lr * (e*self.Q[i]-self.reg_latent*self.P[u])
 
     def predict_validation(self, validation, clipped=True):
         """
@@ -237,22 +244,32 @@ class ManualSVD():
         coverage = round((len(unique_recommended_items) / preds.shape[1]),4)  # divide by total number of items
         return coverage
     
-    def get_top_N(self, N=10):
+    def get_top_N(self, biases=True, N=10, **kwargs):
         """
         Computes, the top-N unseen items, as ranked by user-item factor interactions.
         Args:
             -N: the number of unseen items recommended
         """
+        a = kwargs.get('a', 1) 
         # generate matrix of user-item predictions
-        preds = self.P @ self.Q.T
+        preds = (self.P @ self.Q.T)
+        if biases:
+            preds += (self.B_u.reshape(-1, 1) + self.B_i.reshape(1, -1)) * a
         # find "seen" items (previously rated)
         user_ids, item_ids = self.train.row, self.train.col
         # mask seen items
         masked_preds = preds.copy()
         masked_preds[user_ids, item_ids] =  - np.inf
-        top_N = np.argsort(-masked_preds, axis=1)[:, :N]
+        top_n = np.argpartition(masked_preds, -N, axis=1)[:,-N:]
+        # Step 1: Get the top-N *unsorted* item scores
+        top_n_scores = np.take_along_axis(masked_preds, top_n, axis=1)  # shape: (num_users, N)
 
-        return top_N
+        # Step 2: Get sort order (descending) for each row's top-N scores
+        sort_order = np.argsort(top_n_scores, axis=1)[:, ::-1]  # shape: (num_users, N)
+
+        # Step 3: Reorder the top-N item indices by their score
+        top_n_sorted = np.take_along_axis(top_n, sort_order, axis=1)  # shape: (num_users, N)
+        return top_n_sorted
     
     def hit_rate_at_N(self, validation, N=100):
         """

@@ -128,7 +128,7 @@ class UserBasedCF():
         top_N_items = np.argsort(preds)[-N:][::-1]
         return top_N_items.tolist()
     
-    def top_N_beers(self, user, k=3, N=5):
+    def top_N_beers(self, user, k=10, N=10):
         """
         Predict top N beers with k-nn CF
         Args:
